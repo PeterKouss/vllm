@@ -683,6 +683,7 @@ class LLMEngine:
             trace_headers: Optional[Mapping[str, str]] = None,
             prompt_adapter_request: Optional[PromptAdapterRequest] = None,
             priority: int = 0,
+            his_diff_emb: Optional[torch.Tensor] = None,
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
     ) -> None:
