@@ -24,6 +24,7 @@ class NewRequestData:
     req_id: str
     prompt_token_ids: list[int]
     his_diff_emb: Optional[torch.Tensor]
+    user_item_facets: Optional[torch.Tensor]
     mm_inputs: list[MultiModalKwargs]
     mm_hashes: list[str]
     mm_positions: list[PlaceholderRange]
@@ -31,6 +32,7 @@ class NewRequestData:
     block_ids: list[int]
     num_computed_tokens: int
     lora_request: Optional[LoRARequest]
+    all_facets: Optional[torch.Tensor] = None
 
     @classmethod
     def from_request(
@@ -42,6 +44,7 @@ class NewRequestData:
             req_id=request.request_id,
             prompt_token_ids=request.prompt_token_ids,
             his_diff_emb=request.his_diff_emb,
+            user_item_facets=request.user_item_facets,
             mm_inputs=request.mm_inputs,
             mm_hashes=request.mm_hashes,
             mm_positions=request.mm_positions,
@@ -49,6 +52,7 @@ class NewRequestData:
             block_ids=block_ids,
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
+            all_facets=getattr(request, 'all_facets', None),
         )
 
 
@@ -64,6 +68,8 @@ class CachedRequestData:
     new_block_ids: list[int]
     num_computed_tokens: int
     his_diff_emb: Optional[torch.Tensor]
+    user_item_facets: Optional[torch.Tensor]
+    all_facets: Optional[torch.Tensor] = None
 
     @classmethod
     def from_request(
@@ -80,6 +86,8 @@ class CachedRequestData:
             new_block_ids=new_block_ids,
             num_computed_tokens=request.num_computed_tokens,
             his_diff_emb=request.his_diff_emb,
+            user_item_facets=request.user_item_facets,
+            all_facets=getattr(request, 'all_facets', None),
         )
 
 

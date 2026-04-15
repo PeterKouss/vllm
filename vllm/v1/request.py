@@ -23,6 +23,8 @@ class Request:
         request_id: str,
         prompt_token_ids: list[int],
         his_diff_emb: Optional[torch.Tensor],
+        user_item_facets: Optional[torch.Tensor],
+        all_facets: Optional[torch.Tensor],
         multi_modal_inputs: Optional[list[MultiModalKwargs]],
         multi_modal_hashes: Optional[list[str]],
         multi_modal_placeholders: Optional[list[PlaceholderRange]],
@@ -40,6 +42,8 @@ class Request:
         self.lora_request = lora_request
         self.structured_output_request = structured_output_request
         self.his_diff_emb = his_diff_emb
+        self.user_item_facets = user_item_facets
+        self.all_facets = all_facets
 
         self.status = (RequestStatus.WAITING_FOR_FSM
                        if sampling_params.guided_decoding is not None else
@@ -86,6 +90,8 @@ class Request:
             request_id=request.request_id,
             prompt_token_ids=request.prompt_token_ids,
             his_diff_emb=request.his_diff_emb,
+            user_item_facets=request.user_item_facets,
+            all_facets=getattr(request, 'all_facets', None),
             multi_modal_inputs=request.mm_inputs,
             multi_modal_hashes=request.mm_hashes,
             multi_modal_placeholders=request.mm_placeholders,

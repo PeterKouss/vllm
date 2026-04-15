@@ -385,6 +385,8 @@ class LLM:
         sampling_params: Optional[Union[SamplingParams,
                                         Sequence[SamplingParams]]] = None,
         his_diff_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        user_item_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        all_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         prompt_token_ids: Optional[Union[list[int], list[list[int]]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
@@ -467,6 +469,8 @@ class LLM:
             prompts=parsed_prompts,
             params=sampling_params,
             his_diff_embs=his_diff_embs,
+            user_item_facets=user_item_facets,
+            all_facets=all_facets,
             use_tqdm=use_tqdm,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
@@ -1346,6 +1350,8 @@ class LLM:
         params: Union[SamplingParams, Sequence[SamplingParams], PoolingParams,
                       Sequence[PoolingParams]],
         his_diff_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        user_item_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        all_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         *,
         use_tqdm: bool,
         lora_request: Optional[Union[Sequence[LoRARequest], LoRARequest]],
@@ -1392,6 +1398,8 @@ class LLM:
                 prompt,
                 params[i] if isinstance(params, Sequence) else params,
                 his_diff_emb=his_diff_embs[i] if isinstance(his_diff_embs, Sequence) else his_diff_embs,
+                user_item_facet=user_item_facets[i] if isinstance(user_item_facets, Sequence) else user_item_facets,
+                all_facets=all_facets[i] if isinstance(all_facets, Sequence) else all_facets,
                 tokenization_kwargs=tokenization_kwargs,
                 lora_request=lora_request[i] if isinstance(
                     lora_request, Sequence) else lora_request,
@@ -1404,17 +1412,31 @@ class LLM:
         prompt: PromptType,
         params: Union[SamplingParams, PoolingParams],
         his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facet: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
         tokenization_kwargs: Optional[dict[str, Any]] = None,
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
     ) -> None:
+        import torch
+        import numpy as np
+        # Convert numpy arrays to torch tensors if needed, cast to bfloat16
+        if his_diff_emb is not None and isinstance(his_diff_emb, np.ndarray):
+            his_diff_emb = torch.from_numpy(his_diff_emb).to(torch.bfloat16)
+        if user_item_facet is not None and isinstance(user_item_facet, np.ndarray):
+            user_item_facet = torch.from_numpy(user_item_facet).to(torch.bfloat16)
+        if all_facets is not None and isinstance(all_facets, np.ndarray):
+            all_facets = torch.from_numpy(all_facets).to(torch.bfloat16)
+
         request_id = str(next(self.request_counter))
         self.llm_engine.add_request(
             request_id,
             prompt,
             params,
             his_diff_emb=his_diff_emb,
+            user_item_facets=user_item_facet,
+            all_facets=all_facets,
             lora_request=lora_request,
             tokenization_kwargs=tokenization_kwargs,
             prompt_adapter_request=prompt_adapter_request,

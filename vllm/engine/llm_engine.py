@@ -565,6 +565,9 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest],
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
     ) -> Optional[SequenceGroup]:
         """Add a processed request to the engine's request pool.
         return the created sequence group.
@@ -609,7 +612,10 @@ class LLMEngine:
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
                 encoder_seq=encoder_seq,
-                priority=priority)
+                priority=priority,
+                his_diff_emb=his_diff_emb,
+                user_item_facets=user_item_facets,
+                all_facets=all_facets)
         elif isinstance(params, PoolingParams):
             seq_group = self._create_sequence_group_with_pooling(
                 request_id,
@@ -619,7 +625,10 @@ class LLMEngine:
                 lora_request=lora_request,
                 prompt_adapter_request=prompt_adapter_request,
                 encoder_seq=encoder_seq,
-                priority=priority)
+                priority=priority,
+                his_diff_emb=his_diff_emb,
+                user_item_facets=user_item_facets,
+                all_facets=all_facets)
         else:
             raise ValueError(
                 "Either SamplingParams or PoolingParams must be provided.")
@@ -649,6 +658,9 @@ class LLMEngine:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
     ) -> None:
         ...
 
@@ -665,6 +677,9 @@ class LLMEngine:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
     ) -> None:
         ...
 
@@ -684,6 +699,8 @@ class LLMEngine:
             prompt_adapter_request: Optional[PromptAdapterRequest] = None,
             priority: int = 0,
             his_diff_emb: Optional[torch.Tensor] = None,
+            user_item_facets: Optional[torch.Tensor] = None,
+            all_facets: Optional[torch.Tensor] = None,
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
     ) -> None:
@@ -776,6 +793,9 @@ class LLMEngine:
             prompt_adapter_request=prompt_adapter_request,
             trace_headers=trace_headers,
             priority=priority,
+            his_diff_emb=his_diff_emb,
+            user_item_facets=user_item_facets,
+            all_facets=all_facets,
         )
 
     def _create_sequence_group_with_sampling(
@@ -789,6 +809,9 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         encoder_seq: Optional[Sequence] = None,
         priority: int = 0,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with SamplingParams."""
         max_logprobs = self.get_model_config().max_logprobs
@@ -824,7 +847,10 @@ class LLMEngine:
             prompt_adapter_request=prompt_adapter_request,
             encoder_seq=encoder_seq,
             priority=priority,
-            draft_size=draft_size)
+            draft_size=draft_size,
+            his_diff_emb=his_diff_emb,
+            user_item_facets=user_item_facets,
+            all_facets=all_facets)
 
         return seq_group
 
@@ -838,6 +864,9 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest],
         encoder_seq: Optional[Sequence] = None,
         priority: int = 0,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with PoolingParams."""
         # Defensive copy of PoolingParams, which are used by the pooler
@@ -851,7 +880,10 @@ class LLMEngine:
             pooling_params=pooling_params,
             prompt_adapter_request=prompt_adapter_request,
             encoder_seq=encoder_seq,
-            priority=priority)
+            priority=priority,
+            his_diff_emb=his_diff_emb,
+            user_item_facets=user_item_facets,
+            all_facets=all_facets)
         return seq_group
 
     def abort_request(self, request_id: Union[str, Iterable[str]]) -> None:

@@ -732,7 +732,10 @@ class SequenceGroup:
                  trace_headers: Optional[Mapping[str, str]] = None,
                  prompt_adapter_request: Optional[PromptAdapterRequest] = None,
                  priority: int = 0,
-                 draft_size: int = 1) -> None:
+                 draft_size: int = 1,
+                 his_diff_emb: Optional[torch.Tensor] = None,
+                 user_item_facets: Optional[torch.Tensor] = None,
+                 all_facets: Optional[torch.Tensor] = None) -> None:
         self.request_id = request_id
         self.seqs = seqs
         self.first_seq = seqs[0]
@@ -758,6 +761,9 @@ class SequenceGroup:
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
         self.priority = priority
+        self.his_diff_emb = his_diff_emb
+        self.user_item_facets = user_item_facets
+        self.all_facets = all_facets
 
         self.cached_request_output = None
 
@@ -1039,6 +1045,9 @@ class SequenceGroupMetadata(
     cross_block_table: Optional[list[int]] = None
     prompt_adapter_request: Optional[PromptAdapterRequest] = None
     token_chunk_size: Optional[int] = None
+    his_diff_emb: Optional[torch.Tensor] = None
+    user_item_facets: Optional[torch.Tensor] = None
+    all_facets: Optional[torch.Tensor] = None
 
     ### Stateful fields that are lazily defined. ###
     # The number of speculative tokens adopted in this request.
@@ -1521,6 +1530,9 @@ class ParallelSampleSequenceGroup(SequenceGroupBase):
             trace_headers=seq_group.trace_headers,
             prompt_adapter_request=seq_group.prompt_adapter_request,
             priority=seq_group.priority,
+            his_diff_emb=getattr(seq_group, 'his_diff_emb', None),
+            user_item_facets=getattr(seq_group, 'user_item_facets', None),
+            all_facets=getattr(seq_group, 'all_facets', None),
         )
 
         group.streaming = params.output_kind == RequestOutputKind.DELTA

@@ -1629,6 +1629,9 @@ class Scheduler:
                         seq_group.multi_modal_placeholders
                         if scheduler_outputs.num_prefill_groups > 0 else None),
                     prompt_adapter_request=seq_group.prompt_adapter_request,
+                    his_diff_emb=getattr(seq_group, 'his_diff_emb', None),
+                    user_item_facets=getattr(seq_group, 'user_item_facets', None),
+                    all_facets=getattr(seq_group, 'all_facets', None),
                 )
             else:
                 # When SPMD mode is enabled, we only send delta data except for

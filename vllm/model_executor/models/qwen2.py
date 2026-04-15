@@ -517,6 +517,10 @@ class DEPModel(Qwen2ForCausalLM):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         self.his_token_ids = [151665 + i for i in range(8)]
         self.diff_token_ids = [151673 + i for i in range(8)]
+        # Use sets for faster lookup
+        self.all_his_diff_token_ids = set(self.his_token_ids + self.diff_token_ids)
+        self.his_token_id_to_idx = {tid: i for i, tid in enumerate(self.his_token_ids)}
+        self.diff_token_id_to_idx = {tid: i for i, tid in enumerate(self.diff_token_ids)}
         self.sae = SparseAutoEncoder(EMBED_SIZE, HIDDEN_SIZE)
         self.align_mlp_his = nn.Sequential(
             nn.Linear(HIDDEN_SIZE, self.config.hidden_size, dtype=torch.bfloat16),
@@ -528,7 +532,7 @@ class DEPModel(Qwen2ForCausalLM):
             nn.GELU(),
             nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
         )
-    
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -536,14 +540,26 @@ class DEPModel(Qwen2ForCausalLM):
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
         inputs_embs = self.get_input_embeddings(input_ids)
         flag = False
-        for i in range(len(input_ids)):
-            if input_ids[i] in self.his_token_ids + self.diff_token_ids:
+        # Convert to Python ints first using .tolist()
+        input_ids_list = input_ids.tolist()
+        for tid in input_ids_list:
+            if tid in self.all_his_diff_token_ids:
                 flag = True
                 break
+
+        replaced_count = 0
         if his_diff_emb is not None and flag:
+            # Move to the same device as input_ids and convert to bfloat16
+            his_diff_emb = his_diff_emb.to(input_ids.device).to(torch.bfloat16)
+
+            # Handle both batched [batch, 16, 1024] and unbatched [16, 1024] cases
+            if his_diff_emb.dim() == 2:
+                his_diff_emb = his_diff_emb.unsqueeze(0)  # Add batch dimension
+
             his_diff_sparse_emb, _ = self.sae(his_diff_emb)
             his_emb = his_diff_sparse_emb[:, :8, :]
             diff_emb = his_diff_sparse_emb[:, 8:, :]
@@ -551,11 +567,177 @@ class DEPModel(Qwen2ForCausalLM):
             diff_emb = diff_emb.to(inputs_embs.dtype)
             his_emb = self.align_mlp_his(his_emb)
             diff_emb = self.align_mlp_diff(diff_emb)
-            for i in range(len(input_ids)):
-                if input_ids[i] in self.his_token_ids:
-                    inputs_embs[i] = his_emb[i][self.his_token_ids.index(input_ids[i])]
-                elif input_ids[i] in self.diff_token_ids:
-                    inputs_embs[i] = diff_emb[i][self.diff_token_ids.index(input_ids[i])]
+
+            # For simplicity, use the first batch element for all positions
+            # (This works for single-request inference)
+            his_emb_0 = his_emb[0]
+            diff_emb_0 = diff_emb[0]
+
+            for i, tid in enumerate(input_ids_list):
+                if tid in self.his_token_id_to_idx:
+                    inputs_embs[i] = his_emb_0[self.his_token_id_to_idx[tid]]
+                    replaced_count += 1
+                elif tid in self.diff_token_id_to_idx:
+                    inputs_embs[i] = diff_emb_0[self.diff_token_id_to_idx[tid]]
+                    replaced_count += 1
+
+        hidden_states = self.model(input_ids, positions, intermediate_tensors,
+                                   inputs_embs)
+        return hidden_states
+
+
+MAX_HIS_LEN = 8
+N_USER_CLUSTERS = 8
+N_ITEM_CLUSTERS = 8
+
+
+class FacetDEPModel(Qwen2ForCausalLM):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        super().__init__(vllm_config=vllm_config, prefix=prefix)
+        # Token ID layout (144 tokens total):
+        # 0-63:   HIST_USER_FACET_{0-7}_{0-7} (8×8)
+        # 64-127: HIST_ITEM_FACET_{0-7}_{0-7} (8×8)
+        # 128-135: GLOBAL_USER_FACET_{0-7} (8)
+        # 136-143: GLOBAL_ITEM_FACET_{0-7} (8)
+        base_token_id = 151665
+
+        # History user facet tokens: [HIST_USER_FACET_{i}_{j}]
+        self.hist_user_facet_token_ids = []
+        for i in range(MAX_HIS_LEN):
+            for j in range(N_USER_CLUSTERS):
+                self.hist_user_facet_token_ids.append(base_token_id + i * N_USER_CLUSTERS + j)
+
+        # History item facet tokens: [HIST_ITEM_FACET_{i}_{j}]
+        self.hist_item_facet_token_ids = []
+        for i in range(MAX_HIS_LEN):
+            for j in range(N_ITEM_CLUSTERS):
+                self.hist_item_facet_token_ids.append(base_token_id + 64 + i * N_ITEM_CLUSTERS + j)
+
+        # Global user facet tokens: [GLOBAL_USER_FACET_{i}]
+        self.global_user_facet_token_ids = [base_token_id + 128 + i for i in range(N_USER_CLUSTERS)]
+
+        # Global item facet tokens: [GLOBAL_ITEM_FACET_{i}]
+        self.global_item_facet_token_ids = [base_token_id + 136 + i for i in range(N_ITEM_CLUSTERS)]
+
+        # All facet tokens for quick checking - use sets and dicts for faster lookup
+        self.all_facet_token_ids_set = set(
+            self.hist_user_facet_token_ids +
+            self.hist_item_facet_token_ids +
+            self.global_user_facet_token_ids +
+            self.global_item_facet_token_ids
+        )
+
+        # Create token ID to index mappings for O(1) lookup
+        self.hist_user_token_id_to_idx = {tid: i for i, tid in enumerate(self.hist_user_facet_token_ids)}
+        self.hist_item_token_id_to_idx = {tid: i for i, tid in enumerate(self.hist_item_facet_token_ids)}
+        self.global_user_token_id_to_idx = {tid: i for i, tid in enumerate(self.global_user_facet_token_ids)}
+        self.global_item_token_id_to_idx = {tid: i for i, tid in enumerate(self.global_item_facet_token_ids)}
+
+        self.sae = SparseAutoEncoder(EMBED_SIZE, HIDDEN_SIZE)
+        self.align_mlp_user = nn.Sequential(
+            nn.Linear(HIDDEN_SIZE, self.config.hidden_size, dtype=torch.bfloat16),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
+        )
+        self.align_mlp_item = nn.Sequential(
+            nn.Linear(HIDDEN_SIZE, self.config.hidden_size, dtype=torch.bfloat16),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
+        )
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        intermediate_tensors: Optional[IntermediateTensors] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        inputs_embs = self.get_input_embeddings(input_ids)
+
+        # Check if we need to process all_facets
+        # Convert to Python ints first using .tolist() - critical fix!
+        input_ids_list = input_ids.tolist()
+        flag = False
+        for tid in input_ids_list:
+            if tid in self.all_facet_token_ids_set:
+                flag = True
+                break
+
+        replaced_count = 0
+        if all_facets is not None and flag:
+            # Move to the same device as input_ids and convert to bfloat16
+            all_facets = all_facets.to(input_ids.device).to(torch.bfloat16)
+
+            # Handle both batched [batch, 144, 1024] and unbatched [144, 1024] cases
+            if all_facets.dim() == 2:
+                all_facets = all_facets.unsqueeze(0)  # Add batch dimension
+
+            # all_facets shape: [batch, 144, 1024]
+            # Structure:
+            #   0-63:   history user facets (8 positions × 8 clusters)
+            #   64-127: history item facets (8 positions × 8 clusters)
+            #   128-135: global user facets (8 clusters)
+            #   136-143: global item facets (8 clusters)
+            facets_sparse_emb, _ = self.sae(all_facets)
+
+            # Split into different parts
+            hist_user_facets_sparse = facets_sparse_emb[:, :64, :]    # [batch, 64, 512]
+            hist_item_facets_sparse = facets_sparse_emb[:, 64:128, :] # [batch, 64, 512]
+            global_user_facets_sparse = facets_sparse_emb[:, 128:136, :] # [batch, 8, 512]
+            global_item_facets_sparse = facets_sparse_emb[:, 136:144, :] # [batch, 8, 512]
+
+            # Reshape history facets: [batch, 8, 8, 512]
+            hist_user_facets_sparse = hist_user_facets_sparse.reshape(-1, MAX_HIS_LEN, N_USER_CLUSTERS, HIDDEN_SIZE)
+            hist_item_facets_sparse = hist_item_facets_sparse.reshape(-1, MAX_HIS_LEN, N_ITEM_CLUSTERS, HIDDEN_SIZE)
+
+            # Align to LLM hidden size
+            hist_user_facets_sparse = hist_user_facets_sparse.to(inputs_embs.dtype)
+            hist_item_facets_sparse = hist_item_facets_sparse.to(inputs_embs.dtype)
+            global_user_facets_sparse = global_user_facets_sparse.to(inputs_embs.dtype)
+            global_item_facets_sparse = global_item_facets_sparse.to(inputs_embs.dtype)
+
+            hist_user_facets_aligned = self.align_mlp_user(hist_user_facets_sparse)  # [batch, 8, 8, hidden]
+            hist_item_facets_aligned = self.align_mlp_item(hist_item_facets_sparse)  # [batch, 8, 8, hidden]
+            global_user_facets_aligned = self.align_mlp_user(global_user_facets_sparse)  # [batch, 8, hidden]
+            global_item_facets_aligned = self.align_mlp_item(global_item_facets_sparse)  # [batch, 8, hidden]
+
+            # For simplicity, use the first batch element for all positions
+            # (This works for single-request inference)
+            hist_user_facets_aligned_0 = hist_user_facets_aligned[0]
+            hist_item_facets_aligned_0 = hist_item_facets_aligned[0]
+            global_user_facets_aligned_0 = global_user_facets_aligned[0]
+            global_item_facets_aligned_0 = global_item_facets_aligned[0]
+
+            # Replace special tokens in input embeddings
+            for i, tid in enumerate(input_ids_list):
+                # History user facet tokens
+                if tid in self.hist_user_token_id_to_idx:
+                    token_idx = self.hist_user_token_id_to_idx[tid]
+                    hist_pos = token_idx // N_USER_CLUSTERS
+                    cluster_idx = token_idx % N_USER_CLUSTERS
+                    inputs_embs[i] = hist_user_facets_aligned_0[hist_pos][cluster_idx]
+                    replaced_count += 1
+                # History item facet tokens
+                elif tid in self.hist_item_token_id_to_idx:
+                    token_idx = self.hist_item_token_id_to_idx[tid]
+                    hist_pos = token_idx // N_ITEM_CLUSTERS
+                    cluster_idx = token_idx % N_ITEM_CLUSTERS
+                    inputs_embs[i] = hist_item_facets_aligned_0[hist_pos][cluster_idx]
+                    replaced_count += 1
+                # Global user facet tokens
+                elif tid in self.global_user_token_id_to_idx:
+                    token_idx = self.global_user_token_id_to_idx[tid]
+                    inputs_embs[i] = global_user_facets_aligned_0[token_idx]
+                    replaced_count += 1
+                # Global item facet tokens
+                elif tid in self.global_item_token_id_to_idx:
+                    token_idx = self.global_item_token_id_to_idx[tid]
+                    inputs_embs[i] = global_item_facets_aligned_0[token_idx]
+                    replaced_count += 1
+
         hidden_states = self.model(input_ids, positions, intermediate_tensors,
                                    inputs_embs)
         return hidden_states

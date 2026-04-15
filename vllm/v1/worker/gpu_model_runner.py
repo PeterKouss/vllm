@@ -218,6 +218,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.his_diff_emb = torch.zeros((self.max_num_tokens, 16, 1024),
                                      dtype=torch.bfloat16,
                                      device=self.device)
+        self.user_item_facets = torch.zeros((self.max_num_tokens, 16, 1024),
+                                          dtype=torch.bfloat16,
+                                          device=self.device)
+        self.all_facets = torch.zeros((self.max_num_tokens, 144, 1024),
+                                       dtype=torch.bfloat16,
+                                       device=self.device)
         # None in the first PP rank. The rest are set after load_model.
         self.intermediate_tensors: Optional[IntermediateTensors] = None
 
@@ -351,6 +357,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 req_id=req_id,
                 prompt_token_ids=new_req_data.prompt_token_ids,
                 his_diff_emb=new_req_data.his_diff_emb,
+                user_item_facets=new_req_data.user_item_facets,
                 mm_inputs=new_req_data.mm_inputs,
                 mm_positions=new_req_data.mm_positions,
                 sampling_params=sampling_params,
@@ -360,6 +367,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 output_token_ids=[],
                 lora_request=new_req_data.lora_request,
             )
+            # Set all_facets attribute if available in new_req_data
+            if hasattr(new_req_data, 'all_facets'):
+                self.requests[req_id].all_facets = new_req_data.all_facets
 
             # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
             if self.uses_mrope:
@@ -409,6 +419,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             num_computed_tokens = req_data.num_computed_tokens
             req_state.num_computed_tokens = num_computed_tokens
             req_state.his_diff_emb = req_data.his_diff_emb
+            req_state.user_item_facets = req_data.user_item_facets
+            if hasattr(req_data, 'all_facets'):
+                req_state.all_facets = req_data.all_facets
             # Add the sampled token(s) from the previous step (if any).
             # This doesn't include "unverified" tokens like spec decode tokens.
             num_new_tokens = (num_computed_tokens +
@@ -508,6 +521,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         num_scheduled_tokens = np.empty(num_reqs, dtype=np.int32)
         req_his_diff_embs = torch.zeros((num_reqs, 16, 1024),
                                         dtype=torch.bfloat16)
+        req_user_item_facets = torch.zeros((num_reqs, 16, 1024),
+                                          dtype=torch.bfloat16)
+        req_all_facets = torch.zeros((num_reqs, 144, 1024),
+                                      dtype=torch.bfloat16)
         max_num_scheduled_tokens = 0
         for i, req_id in enumerate(self.input_batch.req_ids):
             num_tokens = scheduler_output.num_scheduled_tokens[req_id]
@@ -515,6 +532,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             max_num_scheduled_tokens = max(max_num_scheduled_tokens,
                                            num_tokens)
             req_his_diff_embs[i] = self.requests[req_id].his_diff_emb
+            if self.requests[req_id].user_item_facets is not None:
+                req_user_item_facets[i] = self.requests[req_id].user_item_facets
+            if hasattr(self.requests[req_id], 'all_facets') and self.requests[req_id].all_facets is not None:
+                req_all_facets[i] = self.requests[req_id].all_facets
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
@@ -567,6 +588,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         )
         self.his_diff_emb[:total_num_scheduled_tokens].copy_(
             expanded_his_diff_emb_indices_tensor,
+            non_blocking=True
+        )
+
+        user_item_facets_indices_tensor = torch.tensor(req_indices, dtype=torch.long)
+        expanded_user_item_facets_indices_tensor = torch.index_select(
+            req_user_item_facets,
+            dim=0,
+            index=user_item_facets_indices_tensor
+        )
+        self.user_item_facets[:total_num_scheduled_tokens].copy_(
+            expanded_user_item_facets_indices_tensor,
+            non_blocking=True
+        )
+
+        all_facets_indices_tensor = torch.tensor(req_indices, dtype=torch.long)
+        expanded_all_facets_indices_tensor = torch.index_select(
+            req_all_facets,
+            dim=0,
+            index=all_facets_indices_tensor
+        )
+        self.all_facets[:total_num_scheduled_tokens].copy_(
+            expanded_all_facets_indices_tensor,
             non_blocking=True
         )
         
@@ -1101,6 +1144,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # then the embedding layer is not included in the CUDA graph.
             input_ids = self.input_ids[:num_input_tokens]
             his_diff_emb = self.his_diff_emb[:num_input_tokens]
+            user_item_facets = self.user_item_facets[:num_input_tokens]
+            all_facets = self.all_facets[:num_input_tokens]
             inputs_embeds = None
         if self.uses_mrope:
             positions = self.mrope_positions[:, :num_input_tokens]
@@ -1131,6 +1176,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 intermediate_tensors=intermediate_tensors,
                 inputs_embeds=inputs_embeds,
                 his_diff_emb=his_diff_emb,
+                user_item_facets=user_item_facets,
+                all_facets=all_facets,
             )
 
         if self.use_aux_hidden_state_outputs:

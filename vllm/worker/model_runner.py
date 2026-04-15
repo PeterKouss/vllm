@@ -103,6 +103,9 @@ class ModelInputForGPU(ModelRunnerInputBase):
     async_callback: Optional[Callable] = None
     scheduler_outputs: Optional[SchedulerOutputs] = None
     previous_hidden_states: Optional[torch.Tensor] = None
+    his_diff_emb: Optional[torch.Tensor] = None
+    user_item_facets: Optional[torch.Tensor] = None
+    all_facets: Optional[torch.Tensor] = None
 
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
@@ -117,6 +120,9 @@ class ModelInputForGPU(ModelRunnerInputBase):
             "virtual_engine": self.virtual_engine,
             "request_ids_to_seq_ids": self.request_ids_to_seq_ids,
             "finished_requests_ids": self.finished_requests_ids,
+            "his_diff_emb": self.his_diff_emb,
+            "user_item_facets": self.user_item_facets,
+            "all_facets": self.all_facets,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         return tensor_dict
@@ -1726,6 +1732,45 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         """
         model_input = self._prepare_model_input_tensors(
             seq_group_metadata_list, finished_requests_ids)
+
+        # Extract his_diff_emb, user_item_facets, all_facets from seq_group_metadata_list
+        # Collect from all seq_groups and stack them for batch
+        his_diff_emb = None
+        user_item_facets = None
+        all_facets = None
+        if seq_group_metadata_list:
+            # Collect embeddings from all seq_groups
+            his_diff_list = []
+            user_item_list = []
+            all_facets_list = []
+
+            for sg_meta in seq_group_metadata_list:
+                hde = getattr(sg_meta, 'his_diff_emb', None)
+                uif = getattr(sg_meta, 'user_item_facets', None)
+                af = getattr(sg_meta, 'all_facets', None)
+                if hde is not None:
+                    his_diff_list.append(hde)
+                if uif is not None:
+                    user_item_list.append(uif)
+                if af is not None:
+                    all_facets_list.append(af)
+
+            # Stack them into batch tensors
+            if his_diff_list:
+                his_diff_emb = torch.stack(his_diff_list, dim=0)
+            if user_item_list:
+                user_item_facets = torch.stack(user_item_list, dim=0)
+            if all_facets_list:
+                all_facets = torch.stack(all_facets_list, dim=0)
+
+        # Add to model_input
+        model_input = dataclasses.replace(
+            model_input,
+            his_diff_emb=his_diff_emb,
+            user_item_facets=user_item_facets,
+            all_facets=all_facets,
+        )
+
         if get_pp_group().is_last_rank:
             # Sampling metadata is only required for the final pp group
             generators = self.get_generators(finished_requests_ids)
@@ -1831,6 +1876,15 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if not bypass_model_exec:
             with set_forward_context(model_input.attn_metadata,
                                      self.vllm_config, virtual_engine):
+                # Pass our custom embeddings to the model
+                extra_kwargs = {}
+                if hasattr(model_input, 'his_diff_emb') and model_input.his_diff_emb is not None:
+                    extra_kwargs['his_diff_emb'] = model_input.his_diff_emb
+                if hasattr(model_input, 'user_item_facets') and model_input.user_item_facets is not None:
+                    extra_kwargs['user_item_facets'] = model_input.user_item_facets
+                if hasattr(model_input, 'all_facets') and model_input.all_facets is not None:
+                    extra_kwargs['all_facets'] = model_input.all_facets
+
                 hidden_or_intermediate_states = model_executable(
                     input_ids=model_input.input_tokens,
                     inputs_embeds=model_input.inputs_embeds,
@@ -1840,6 +1894,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                                                  device=self.device),
                     **seqlen_agnostic_kwargs,
                     **model_kwargs,
+                    **extra_kwargs,
                 )
 
         if (self.observability_config is not None

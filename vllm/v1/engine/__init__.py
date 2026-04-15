@@ -52,6 +52,7 @@ class EngineCoreRequest(
     request_id: str
     prompt_token_ids: list[int]
     his_diff_emb: Optional[torch.Tensor]
+    user_item_facets: Optional[torch.Tensor]
     mm_inputs: Optional[Sequence[Optional[MultiModalKwargs]]]
     mm_hashes: Optional[list[str]]
     mm_placeholders: Optional[list[PlaceholderRange]]
@@ -60,6 +61,7 @@ class EngineCoreRequest(
     arrival_time: float
     lora_request: Optional[LoRARequest]
     cache_salt: Optional[str]
+    all_facets: Optional[torch.Tensor] = None
 
     # Used in DP case to indicate which wave of requests this is expected to
     # belong to, to cover a race condition where the request is sent before
