@@ -387,6 +387,11 @@ class LLM:
         his_diff_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         user_item_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         all_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        user_subspace_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        target_item_subspace_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        history_item_subspace_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        user_subspace_weights: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        target_item_subspace_weights: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         prompt_token_ids: Optional[Union[list[int], list[list[int]]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
@@ -471,6 +476,11 @@ class LLM:
             his_diff_embs=his_diff_embs,
             user_item_facets=user_item_facets,
             all_facets=all_facets,
+            user_subspace_embs=user_subspace_embs,
+            target_item_subspace_embs=target_item_subspace_embs,
+            history_item_subspace_embs=history_item_subspace_embs,
+            user_subspace_weights=user_subspace_weights,
+            target_item_subspace_weights=target_item_subspace_weights,
             use_tqdm=use_tqdm,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
@@ -1352,6 +1362,11 @@ class LLM:
         his_diff_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         user_item_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         all_facets: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        user_subspace_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        target_item_subspace_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        history_item_subspace_embs: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        user_subspace_weights: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
+        target_item_subspace_weights: Optional[Union[list[torch.Tensor], torch.Tensor]] = None,
         *,
         use_tqdm: bool,
         lora_request: Optional[Union[Sequence[LoRARequest], LoRARequest]],
@@ -1400,6 +1415,11 @@ class LLM:
                 his_diff_emb=his_diff_embs[i] if isinstance(his_diff_embs, Sequence) else his_diff_embs,
                 user_item_facet=user_item_facets[i] if isinstance(user_item_facets, Sequence) else user_item_facets,
                 all_facets=all_facets[i] if isinstance(all_facets, Sequence) else all_facets,
+                user_subspace_emb=user_subspace_embs[i] if isinstance(user_subspace_embs, Sequence) else user_subspace_embs,
+                target_item_subspace_emb=target_item_subspace_embs[i] if isinstance(target_item_subspace_embs, Sequence) else target_item_subspace_embs,
+                history_item_subspace_embs=history_item_subspace_embs[i] if isinstance(history_item_subspace_embs, Sequence) else history_item_subspace_embs,
+                user_subspace_weights=user_subspace_weights[i] if isinstance(user_subspace_weights, Sequence) else user_subspace_weights,
+                target_item_subspace_weights=target_item_subspace_weights[i] if isinstance(target_item_subspace_weights, Sequence) else target_item_subspace_weights,
                 tokenization_kwargs=tokenization_kwargs,
                 lora_request=lora_request[i] if isinstance(
                     lora_request, Sequence) else lora_request,
@@ -1414,6 +1434,11 @@ class LLM:
         his_diff_emb: Optional[torch.Tensor] = None,
         user_item_facet: Optional[torch.Tensor] = None,
         all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
         tokenization_kwargs: Optional[dict[str, Any]] = None,
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
@@ -1428,6 +1453,16 @@ class LLM:
             user_item_facet = torch.from_numpy(user_item_facet).to(torch.bfloat16)
         if all_facets is not None and isinstance(all_facets, np.ndarray):
             all_facets = torch.from_numpy(all_facets).to(torch.bfloat16)
+        if user_subspace_emb is not None and isinstance(user_subspace_emb, np.ndarray):
+            user_subspace_emb = torch.from_numpy(user_subspace_emb).to(torch.bfloat16)
+        if target_item_subspace_emb is not None and isinstance(target_item_subspace_emb, np.ndarray):
+            target_item_subspace_emb = torch.from_numpy(target_item_subspace_emb).to(torch.bfloat16)
+        if history_item_subspace_embs is not None and isinstance(history_item_subspace_embs, np.ndarray):
+            history_item_subspace_embs = torch.from_numpy(history_item_subspace_embs).to(torch.bfloat16)
+        if user_subspace_weights is not None and isinstance(user_subspace_weights, np.ndarray):
+            user_subspace_weights = torch.from_numpy(user_subspace_weights).to(torch.float32)
+        if target_item_subspace_weights is not None and isinstance(target_item_subspace_weights, np.ndarray):
+            target_item_subspace_weights = torch.from_numpy(target_item_subspace_weights).to(torch.float32)
 
         request_id = str(next(self.request_counter))
         self.llm_engine.add_request(
@@ -1437,6 +1472,11 @@ class LLM:
             his_diff_emb=his_diff_emb,
             user_item_facets=user_item_facet,
             all_facets=all_facets,
+            user_subspace_emb=user_subspace_emb,
+            target_item_subspace_emb=target_item_subspace_emb,
+            history_item_subspace_embs=history_item_subspace_embs,
+            user_subspace_weights=user_subspace_weights,
+            target_item_subspace_weights=target_item_subspace_weights,
             lora_request=lora_request,
             tokenization_kwargs=tokenization_kwargs,
             prompt_adapter_request=prompt_adapter_request,

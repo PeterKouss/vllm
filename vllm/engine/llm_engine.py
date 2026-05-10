@@ -568,6 +568,11 @@ class LLMEngine:
         his_diff_emb: Optional[torch.Tensor] = None,
         user_item_facets: Optional[torch.Tensor] = None,
         all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
     ) -> Optional[SequenceGroup]:
         """Add a processed request to the engine's request pool.
         return the created sequence group.
@@ -615,7 +620,12 @@ class LLMEngine:
                 priority=priority,
                 his_diff_emb=his_diff_emb,
                 user_item_facets=user_item_facets,
-                all_facets=all_facets)
+                all_facets=all_facets,
+                user_subspace_emb=user_subspace_emb,
+                target_item_subspace_emb=target_item_subspace_emb,
+                history_item_subspace_embs=history_item_subspace_embs,
+                user_subspace_weights=user_subspace_weights,
+                target_item_subspace_weights=target_item_subspace_weights)
         elif isinstance(params, PoolingParams):
             seq_group = self._create_sequence_group_with_pooling(
                 request_id,
@@ -628,7 +638,12 @@ class LLMEngine:
                 priority=priority,
                 his_diff_emb=his_diff_emb,
                 user_item_facets=user_item_facets,
-                all_facets=all_facets)
+                all_facets=all_facets,
+                user_subspace_emb=user_subspace_emb,
+                target_item_subspace_emb=target_item_subspace_emb,
+                history_item_subspace_embs=history_item_subspace_embs,
+                user_subspace_weights=user_subspace_weights,
+                target_item_subspace_weights=target_item_subspace_weights)
         else:
             raise ValueError(
                 "Either SamplingParams or PoolingParams must be provided.")
@@ -661,6 +676,11 @@ class LLMEngine:
         his_diff_emb: Optional[torch.Tensor] = None,
         user_item_facets: Optional[torch.Tensor] = None,
         all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
     ) -> None:
         ...
 
@@ -680,6 +700,11 @@ class LLMEngine:
         his_diff_emb: Optional[torch.Tensor] = None,
         user_item_facets: Optional[torch.Tensor] = None,
         all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
     ) -> None:
         ...
 
@@ -701,6 +726,11 @@ class LLMEngine:
             his_diff_emb: Optional[torch.Tensor] = None,
             user_item_facets: Optional[torch.Tensor] = None,
             all_facets: Optional[torch.Tensor] = None,
+            user_subspace_emb: Optional[torch.Tensor] = None,
+            target_item_subspace_emb: Optional[torch.Tensor] = None,
+            history_item_subspace_embs: Optional[torch.Tensor] = None,
+            user_subspace_weights: Optional[torch.Tensor] = None,
+            target_item_subspace_weights: Optional[torch.Tensor] = None,
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
     ) -> None:
@@ -796,6 +826,11 @@ class LLMEngine:
             his_diff_emb=his_diff_emb,
             user_item_facets=user_item_facets,
             all_facets=all_facets,
+            user_subspace_emb=user_subspace_emb,
+            target_item_subspace_emb=target_item_subspace_emb,
+            history_item_subspace_embs=history_item_subspace_embs,
+            user_subspace_weights=user_subspace_weights,
+            target_item_subspace_weights=target_item_subspace_weights,
         )
 
     def _create_sequence_group_with_sampling(
@@ -812,6 +847,11 @@ class LLMEngine:
         his_diff_emb: Optional[torch.Tensor] = None,
         user_item_facets: Optional[torch.Tensor] = None,
         all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with SamplingParams."""
         max_logprobs = self.get_model_config().max_logprobs
@@ -850,7 +890,12 @@ class LLMEngine:
             draft_size=draft_size,
             his_diff_emb=his_diff_emb,
             user_item_facets=user_item_facets,
-            all_facets=all_facets)
+            all_facets=all_facets,
+            user_subspace_emb=user_subspace_emb,
+            target_item_subspace_emb=target_item_subspace_emb,
+            history_item_subspace_embs=history_item_subspace_embs,
+            user_subspace_weights=user_subspace_weights,
+            target_item_subspace_weights=target_item_subspace_weights)
 
         return seq_group
 
@@ -867,6 +912,11 @@ class LLMEngine:
         his_diff_emb: Optional[torch.Tensor] = None,
         user_item_facets: Optional[torch.Tensor] = None,
         all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with PoolingParams."""
         # Defensive copy of PoolingParams, which are used by the pooler
@@ -883,7 +933,12 @@ class LLMEngine:
             priority=priority,
             his_diff_emb=his_diff_emb,
             user_item_facets=user_item_facets,
-            all_facets=all_facets)
+            all_facets=all_facets,
+            user_subspace_emb=user_subspace_emb,
+            target_item_subspace_emb=target_item_subspace_emb,
+            history_item_subspace_embs=history_item_subspace_embs,
+            user_subspace_weights=user_subspace_weights,
+            target_item_subspace_weights=target_item_subspace_weights)
         return seq_group
 
     def abort_request(self, request_id: Union[str, Iterable[str]]) -> None:

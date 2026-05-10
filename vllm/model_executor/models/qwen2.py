@@ -23,7 +23,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Inference-only Qwen2 model compatible with HuggingFace weights."""
-from typing import Iterable, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, Optional, Set, Tuple, Union
 
 import torch
 from torch import nn
@@ -551,6 +551,18 @@ class DEPModel(Qwen2ForCausalLM):
                 flag = True
                 break
 
+        # Compute token -> batch index mapping from positions
+        positions_list = positions.tolist()
+        num_tokens = len(input_ids_list)
+        token_batch_idx = [0] * num_tokens
+        batch_idx = 0
+        prev_pos = -1
+        for i, p in enumerate(positions_list):
+            if p < prev_pos:
+                batch_idx += 1
+            token_batch_idx[i] = batch_idx
+            prev_pos = p
+
         replaced_count = 0
         if his_diff_emb is not None and flag:
             # Move to the same device as input_ids and convert to bfloat16
@@ -568,17 +580,13 @@ class DEPModel(Qwen2ForCausalLM):
             his_emb = self.align_mlp_his(his_emb)
             diff_emb = self.align_mlp_diff(diff_emb)
 
-            # For simplicity, use the first batch element for all positions
-            # (This works for single-request inference)
-            his_emb_0 = his_emb[0]
-            diff_emb_0 = diff_emb[0]
-
             for i, tid in enumerate(input_ids_list):
+                b = token_batch_idx[i]
                 if tid in self.his_token_id_to_idx:
-                    inputs_embs[i] = his_emb_0[self.his_token_id_to_idx[tid]]
+                    inputs_embs[i] = his_emb[b][self.his_token_id_to_idx[tid]]
                     replaced_count += 1
                 elif tid in self.diff_token_id_to_idx:
-                    inputs_embs[i] = diff_emb_0[self.diff_token_id_to_idx[tid]]
+                    inputs_embs[i] = diff_emb[b][self.diff_token_id_to_idx[tid]]
                     replaced_count += 1
 
         hidden_states = self.model(input_ids, positions, intermediate_tensors,
@@ -666,6 +674,18 @@ class FacetDEPModel(Qwen2ForCausalLM):
                 flag = True
                 break
 
+        # Compute token -> batch index mapping from positions
+        positions_list = positions.tolist()
+        num_tokens = len(input_ids_list)
+        token_batch_idx = [0] * num_tokens
+        batch_idx = 0
+        prev_pos = -1
+        for i, p in enumerate(positions_list):
+            if p < prev_pos:
+                batch_idx += 1
+            token_batch_idx[i] = batch_idx
+            prev_pos = p
+
         replaced_count = 0
         if all_facets is not None and flag:
             # Move to the same device as input_ids and convert to bfloat16
@@ -704,39 +724,277 @@ class FacetDEPModel(Qwen2ForCausalLM):
             global_user_facets_aligned = self.align_mlp_user(global_user_facets_sparse)  # [batch, 8, hidden]
             global_item_facets_aligned = self.align_mlp_item(global_item_facets_sparse)  # [batch, 8, hidden]
 
-            # For simplicity, use the first batch element for all positions
-            # (This works for single-request inference)
-            hist_user_facets_aligned_0 = hist_user_facets_aligned[0]
-            hist_item_facets_aligned_0 = hist_item_facets_aligned[0]
-            global_user_facets_aligned_0 = global_user_facets_aligned[0]
-            global_item_facets_aligned_0 = global_item_facets_aligned[0]
-
             # Replace special tokens in input embeddings
             for i, tid in enumerate(input_ids_list):
+                b = token_batch_idx[i]
                 # History user facet tokens
                 if tid in self.hist_user_token_id_to_idx:
                     token_idx = self.hist_user_token_id_to_idx[tid]
                     hist_pos = token_idx // N_USER_CLUSTERS
                     cluster_idx = token_idx % N_USER_CLUSTERS
-                    inputs_embs[i] = hist_user_facets_aligned_0[hist_pos][cluster_idx]
+                    inputs_embs[i] = hist_user_facets_aligned[b][hist_pos][cluster_idx]
                     replaced_count += 1
                 # History item facet tokens
                 elif tid in self.hist_item_token_id_to_idx:
                     token_idx = self.hist_item_token_id_to_idx[tid]
                     hist_pos = token_idx // N_ITEM_CLUSTERS
                     cluster_idx = token_idx % N_ITEM_CLUSTERS
-                    inputs_embs[i] = hist_item_facets_aligned_0[hist_pos][cluster_idx]
+                    inputs_embs[i] = hist_item_facets_aligned[b][hist_pos][cluster_idx]
                     replaced_count += 1
                 # Global user facet tokens
                 elif tid in self.global_user_token_id_to_idx:
                     token_idx = self.global_user_token_id_to_idx[tid]
-                    inputs_embs[i] = global_user_facets_aligned_0[token_idx]
+                    inputs_embs[i] = global_user_facets_aligned[b][token_idx]
                     replaced_count += 1
                 # Global item facet tokens
                 elif tid in self.global_item_token_id_to_idx:
                     token_idx = self.global_item_token_id_to_idx[tid]
-                    inputs_embs[i] = global_item_facets_aligned_0[token_idx]
+                    inputs_embs[i] = global_item_facets_aligned[b][token_idx]
                     replaced_count += 1
+
+        hidden_states = self.model(input_ids, positions, intermediate_tensors,
+                                   inputs_embs)
+        return hidden_states
+
+
+MAX_HIS_LEN = 8
+N_BRANCHES = 8
+
+
+def _make_qkv_scale_hook(q_size: int, kv_size: int):
+    """Factory: create a forward hook that scales K/V at specified token positions.
+
+    This bypasses RMSNorm (which would cancel scalar multiplication on token
+    embeddings) and directly influences attention via softmax(Q·(w·K)^T/√d)
+    and the weighted value contribution.
+    """
+    def hook(module: nn.Module, _input, output) -> torch.Tensor:
+        scales: Optional[dict] = getattr(module, '_subspace_scales', None)
+        if scales:
+            # QKVParallelLinear returns (qkv, bias) tuple
+            qkv = output[0]
+            q, k, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
+            for pos, scale in scales.items():
+                k[pos] = k[pos] * scale
+                v[pos] = v[pos] * scale
+            qkv = torch.cat([q, k, v], dim=-1)
+            output = (qkv,) + output[1:]
+        return output
+    return hook
+
+
+class SubspaceDEPModel(Qwen2ForCausalLM):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        super().__init__(vllm_config=vllm_config, prefix=prefix)
+        # Token IDs for subspace model
+        # HIS_TOKEN_0-7: 151665-151672
+        # DIFF_TOKEN_0-7: 151673-151680
+        # USER_SUBSPACE_0-7: 151685-151692
+        # TARGET_ITEM_SUBSPACE_0-7: 151693-151700
+        # HIST_ITEM_SUBSPACE_{i}_{j}: 151701 + i*8 + j
+        base = 151665
+
+        self.his_token_ids = [base + i for i in range(8)]
+        self.diff_token_ids = [base + 8 + i for i in range(8)]
+        self.user_subspace_token_ids = [base + 20 + i for i in range(8)]
+        self.target_item_subspace_token_ids = [base + 28 + i for i in range(8)]
+
+        self.hist_item_subspace_token_ids = []
+        for i in range(MAX_HIS_LEN):
+            for j in range(N_BRANCHES):
+                self.hist_item_subspace_token_ids.append(base + 36 + i * N_BRANCHES + j)
+
+        # Sets for fast lookup
+        self.all_his_diff_token_ids = set(self.his_token_ids + self.diff_token_ids)
+        self.all_subspace_token_ids = set(
+            self.user_subspace_token_ids +
+            self.target_item_subspace_token_ids +
+            self.hist_item_subspace_token_ids
+        )
+
+        # Mappings
+        self.his_token_id_to_idx = {tid: i for i, tid in enumerate(self.his_token_ids)}
+        self.diff_token_id_to_idx = {tid: i for i, tid in enumerate(self.diff_token_ids)}
+        self.user_subspace_token_id_to_idx = {tid: i for i, tid in enumerate(self.user_subspace_token_ids)}
+        self.target_item_subspace_token_id_to_idx = {tid: i for i, tid in enumerate(self.target_item_subspace_token_ids)}
+        self.hist_item_subspace_token_id_to_idx = {tid: i for i, tid in enumerate(self.hist_item_subspace_token_ids)}
+
+        # SAE for his_diff_emb (1024 -> 512)
+        self.sae = SparseAutoEncoder(EMBED_SIZE, HIDDEN_SIZE)
+        # SAE for subspace embeddings (512 -> 256)
+        self.sae_sub = SparseAutoEncoder(HIDDEN_SIZE, HIDDEN_SIZE // 2)
+        self.align_mlp_his = nn.Sequential(
+            nn.Linear(HIDDEN_SIZE, self.config.hidden_size, dtype=torch.bfloat16),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
+        )
+        self.align_mlp_diff = nn.Sequential(
+            nn.Linear(HIDDEN_SIZE, self.config.hidden_size, dtype=torch.bfloat16),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
+        )
+        # Alignment for subspace embeddings (256 -> hidden_size)
+        self.align_mlp_user_sub = nn.Sequential(
+            nn.Linear(HIDDEN_SIZE // 2, self.config.hidden_size, dtype=torch.bfloat16),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
+        )
+        self.align_mlp_item_sub = nn.Sequential(
+            nn.Linear(HIDDEN_SIZE // 2, self.config.hidden_size, dtype=torch.bfloat16),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size, self.config.hidden_size, dtype=torch.bfloat16),
+        )
+
+        # Register K/V scaling hook on Layer 0's qkv_proj to directly influence
+        # attention distribution toward weighted subspace tokens.
+        if hasattr(self.model, 'layers') and len(self.model.layers) > 0:
+            layer0_attn = self.model.layers[0].self_attn
+            layer0_attn.qkv_proj.register_forward_hook(
+                _make_qkv_scale_hook(layer0_attn.q_size, layer0_attn.kv_size))
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        intermediate_tensors: Optional[IntermediateTensors] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        his_diff_emb: Optional[torch.Tensor] = None,
+        user_item_facets: Optional[torch.Tensor] = None,
+        all_facets: Optional[torch.Tensor] = None,
+        user_subspace_emb: Optional[torch.Tensor] = None,
+        target_item_subspace_emb: Optional[torch.Tensor] = None,
+        history_item_subspace_embs: Optional[torch.Tensor] = None,
+        user_subspace_weights: Optional[torch.Tensor] = None,
+        target_item_subspace_weights: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        # Clear stale K/V scales from previous forward calls
+        layer0_attn = self.model.layers[0].self_attn if hasattr(self.model, 'layers') and len(self.model.layers) > 0 else None
+        if layer0_attn is not None and hasattr(layer0_attn, 'qkv_proj'):
+            layer0_attn.qkv_proj._subspace_scales = None
+
+        inputs_embs = self.get_input_embeddings(input_ids)
+        input_ids_list = input_ids.tolist()
+
+        # Compute token -> batch index mapping from positions.
+        # In vLLM v0 flat batch mode, positions resets to 0 at sequence
+        # boundaries, so a drop in position value signals a new sample.
+        positions_list = positions.tolist()
+        num_tokens = len(input_ids_list)
+        token_batch_idx = [0] * num_tokens
+        batch_idx = 0
+        prev_pos = -1
+        for i, p in enumerate(positions_list):
+            if p < prev_pos:
+                batch_idx += 1
+            token_batch_idx[i] = batch_idx
+            prev_pos = p
+
+        # K/V scale map: token_position -> scale (float)
+        kv_scales: Dict[int, float] = {}
+
+        # Check if any special tokens are present
+        flag_his_diff = False
+        flag_subspace = False
+        for tid in input_ids_list:
+            if tid in self.all_his_diff_token_ids:
+                flag_his_diff = True
+            if tid in self.all_subspace_token_ids:
+                flag_subspace = True
+            if flag_his_diff and flag_subspace:
+                break
+
+        # Process his_diff_emb
+        if his_diff_emb is not None and flag_his_diff:
+            his_diff_emb = his_diff_emb.to(input_ids.device).to(torch.bfloat16)
+            if his_diff_emb.dim() == 2:
+                his_diff_emb = his_diff_emb.unsqueeze(0)
+
+            his_diff_sparse_emb, _ = self.sae(his_diff_emb)
+            his_emb = his_diff_sparse_emb[:, :8, :]
+            diff_emb = his_diff_sparse_emb[:, 8:, :]
+            his_emb = his_emb.to(inputs_embs.dtype)
+            diff_emb = diff_emb.to(inputs_embs.dtype)
+            his_emb = self.align_mlp_his(his_emb)
+            diff_emb = self.align_mlp_diff(diff_emb)
+
+            for i, tid in enumerate(input_ids_list):
+                b = token_batch_idx[i]
+                if tid in self.his_token_id_to_idx:
+                    inputs_embs[i] = his_emb[b][self.his_token_id_to_idx[tid]]
+                elif tid in self.diff_token_id_to_idx:
+                    inputs_embs[i] = diff_emb[b][self.diff_token_id_to_idx[tid]]
+
+        # Process user_subspace_emb with optional per-branch weights
+        if user_subspace_emb is not None and flag_subspace:
+            user_subspace_emb = user_subspace_emb.to(input_ids.device).to(torch.bfloat16)
+            if user_subspace_emb.dim() == 2:
+                user_subspace_emb = user_subspace_emb.unsqueeze(0)
+            user_subspace_emb = user_subspace_emb.to(inputs_embs.dtype)
+            # Pass through SAE: [N, 8, 512] -> [N*8, 512] -> [N*8, 256] -> [N, 8, 256]
+            n_batch = user_subspace_emb.shape[0]
+            user_subspace_emb_flat = user_subspace_emb.reshape(n_batch * N_BRANCHES, HIDDEN_SIZE)
+            user_subspace_sparse, _ = self.sae_sub(user_subspace_emb_flat)
+            user_subspace_emb = user_subspace_sparse.reshape(n_batch, N_BRANCHES, HIDDEN_SIZE // 2)
+            user_subspace_emb = self.align_mlp_user_sub(user_subspace_emb)
+
+            for i, tid in enumerate(input_ids_list):
+                b = token_batch_idx[i]
+                if tid in self.user_subspace_token_id_to_idx:
+                    branch_idx = self.user_subspace_token_id_to_idx[tid]
+                    inputs_embs[i] = user_subspace_emb[b][branch_idx]
+                    # Record scale for K/V intervention (path 2 only)
+                    if user_subspace_weights is not None:
+                        kv_scales[i] = float(user_subspace_weights[b][branch_idx].item())
+
+        # Process target_item_subspace_emb with optional per-branch weights
+        if target_item_subspace_emb is not None and flag_subspace:
+            target_item_subspace_emb = target_item_subspace_emb.to(input_ids.device).to(torch.bfloat16)
+            if target_item_subspace_emb.dim() == 2:
+                target_item_subspace_emb = target_item_subspace_emb.unsqueeze(0)
+            target_item_subspace_emb = target_item_subspace_emb.to(inputs_embs.dtype)
+            # Pass through SAE: [N, 8, 512] -> [N*8, 512] -> [N*8, 256] -> [N, 8, 256]
+            n_batch = target_item_subspace_emb.shape[0]
+            target_item_subspace_emb_flat = target_item_subspace_emb.reshape(n_batch * N_BRANCHES, HIDDEN_SIZE)
+            target_item_subspace_sparse, _ = self.sae_sub(target_item_subspace_emb_flat)
+            target_item_subspace_emb = target_item_subspace_sparse.reshape(n_batch, N_BRANCHES, HIDDEN_SIZE // 2)
+            target_item_subspace_emb = self.align_mlp_item_sub(target_item_subspace_emb)
+
+            for i, tid in enumerate(input_ids_list):
+                b = token_batch_idx[i]
+                if tid in self.target_item_subspace_token_id_to_idx:
+                    branch_idx = self.target_item_subspace_token_id_to_idx[tid]
+                    inputs_embs[i] = target_item_subspace_emb[b][branch_idx]
+                    # Record scale for K/V intervention (path 2 only)
+                    if target_item_subspace_weights is not None:
+                        kv_scales[i] = float(target_item_subspace_weights[b][branch_idx].item())
+
+        if history_item_subspace_embs is not None and flag_subspace:
+            history_item_subspace_embs = history_item_subspace_embs.to(input_ids.device).to(torch.bfloat16)
+            if history_item_subspace_embs.dim() == 3:
+                history_item_subspace_embs = history_item_subspace_embs.unsqueeze(0)
+            history_item_subspace_embs = history_item_subspace_embs.to(inputs_embs.dtype)
+            # Pass through SAE: [N, 8, 8, 512] -> [N*64, 512] -> [N*64, 256] -> [N, 8, 8, 256]
+            n_batch = history_item_subspace_embs.shape[0]
+            history_item_subspace_emb_flat = history_item_subspace_embs.reshape(
+                n_batch * MAX_HIS_LEN * N_BRANCHES, HIDDEN_SIZE
+            )
+            history_item_subspace_sparse, _ = self.sae_sub(history_item_subspace_emb_flat)
+            history_item_subspace_embs = history_item_subspace_sparse.reshape(
+                n_batch, MAX_HIS_LEN, N_BRANCHES, HIDDEN_SIZE // 2
+            )
+            history_item_subspace_embs = self.align_mlp_item_sub(history_item_subspace_embs)
+
+            for i, tid in enumerate(input_ids_list):
+                b = token_batch_idx[i]
+                if tid in self.hist_item_subspace_token_id_to_idx:
+                    token_idx = self.hist_item_subspace_token_id_to_idx[tid]
+                    hist_pos = token_idx // N_BRANCHES
+                    branch_idx = token_idx % N_BRANCHES
+                    inputs_embs[i] = history_item_subspace_embs[b][hist_pos][branch_idx]
+
+        # Set K/V scales on Layer 0's qkv_proj BEFORE model forward
+        if layer0_attn is not None and hasattr(layer0_attn, 'qkv_proj') and kv_scales:
+            layer0_attn.qkv_proj._subspace_scales = kv_scales
 
         hidden_states = self.model(input_ids, positions, intermediate_tensors,
                                    inputs_embs)

@@ -735,7 +735,12 @@ class SequenceGroup:
                  draft_size: int = 1,
                  his_diff_emb: Optional[torch.Tensor] = None,
                  user_item_facets: Optional[torch.Tensor] = None,
-                 all_facets: Optional[torch.Tensor] = None) -> None:
+                 all_facets: Optional[torch.Tensor] = None,
+                 user_subspace_emb: Optional[torch.Tensor] = None,
+                 target_item_subspace_emb: Optional[torch.Tensor] = None,
+                 history_item_subspace_embs: Optional[torch.Tensor] = None,
+                 user_subspace_weights: Optional[torch.Tensor] = None,
+                 target_item_subspace_weights: Optional[torch.Tensor] = None) -> None:
         self.request_id = request_id
         self.seqs = seqs
         self.first_seq = seqs[0]
@@ -764,6 +769,11 @@ class SequenceGroup:
         self.his_diff_emb = his_diff_emb
         self.user_item_facets = user_item_facets
         self.all_facets = all_facets
+        self.user_subspace_emb = user_subspace_emb
+        self.target_item_subspace_emb = target_item_subspace_emb
+        self.history_item_subspace_embs = history_item_subspace_embs
+        self.user_subspace_weights = user_subspace_weights
+        self.target_item_subspace_weights = target_item_subspace_weights
 
         self.cached_request_output = None
 
@@ -1048,6 +1058,11 @@ class SequenceGroupMetadata(
     his_diff_emb: Optional[torch.Tensor] = None
     user_item_facets: Optional[torch.Tensor] = None
     all_facets: Optional[torch.Tensor] = None
+    user_subspace_emb: Optional[torch.Tensor] = None
+    target_item_subspace_emb: Optional[torch.Tensor] = None
+    history_item_subspace_embs: Optional[torch.Tensor] = None
+    user_subspace_weights: Optional[torch.Tensor] = None
+    target_item_subspace_weights: Optional[torch.Tensor] = None
 
     ### Stateful fields that are lazily defined. ###
     # The number of speculative tokens adopted in this request.
@@ -1533,6 +1548,9 @@ class ParallelSampleSequenceGroup(SequenceGroupBase):
             his_diff_emb=getattr(seq_group, 'his_diff_emb', None),
             user_item_facets=getattr(seq_group, 'user_item_facets', None),
             all_facets=getattr(seq_group, 'all_facets', None),
+            user_subspace_emb=getattr(seq_group, 'user_subspace_emb', None),
+            target_item_subspace_emb=getattr(seq_group, 'target_item_subspace_emb', None),
+            history_item_subspace_embs=getattr(seq_group, 'history_item_subspace_embs', None),
         )
 
         group.streaming = params.output_kind == RequestOutputKind.DELTA

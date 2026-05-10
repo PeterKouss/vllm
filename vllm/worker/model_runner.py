@@ -106,6 +106,11 @@ class ModelInputForGPU(ModelRunnerInputBase):
     his_diff_emb: Optional[torch.Tensor] = None
     user_item_facets: Optional[torch.Tensor] = None
     all_facets: Optional[torch.Tensor] = None
+    user_subspace_emb: Optional[torch.Tensor] = None
+    target_item_subspace_emb: Optional[torch.Tensor] = None
+    history_item_subspace_embs: Optional[torch.Tensor] = None
+    user_subspace_weights: Optional[torch.Tensor] = None
+    target_item_subspace_weights: Optional[torch.Tensor] = None
 
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
@@ -123,6 +128,11 @@ class ModelInputForGPU(ModelRunnerInputBase):
             "his_diff_emb": self.his_diff_emb,
             "user_item_facets": self.user_item_facets,
             "all_facets": self.all_facets,
+            "user_subspace_emb": self.user_subspace_emb,
+            "target_item_subspace_emb": self.target_item_subspace_emb,
+            "history_item_subspace_embs": self.history_item_subspace_embs,
+            "user_subspace_weights": self.user_subspace_weights,
+            "target_item_subspace_weights": self.target_item_subspace_weights,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         return tensor_dict
@@ -174,6 +184,14 @@ class ModelInputForGPUWithSamplingMetadata(ModelInputForGPU):
             "virtual_engine": self.virtual_engine,
             "request_ids_to_seq_ids": self.request_ids_to_seq_ids,
             "finished_requests_ids": self.finished_requests_ids,
+            "his_diff_emb": self.his_diff_emb,
+            "user_item_facets": self.user_item_facets,
+            "all_facets": self.all_facets,
+            "user_subspace_emb": self.user_subspace_emb,
+            "target_item_subspace_emb": self.target_item_subspace_emb,
+            "history_item_subspace_embs": self.history_item_subspace_embs,
+            "user_subspace_weights": self.user_subspace_weights,
+            "target_item_subspace_weights": self.target_item_subspace_weights,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         _add_sampling_metadata_broadcastable_dict(tensor_dict,
@@ -1738,22 +1756,47 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         his_diff_emb = None
         user_item_facets = None
         all_facets = None
+        user_subspace_emb = None
+        target_item_subspace_emb = None
+        history_item_subspace_embs = None
+        user_subspace_weights = None
+        target_item_subspace_weights = None
         if seq_group_metadata_list:
             # Collect embeddings from all seq_groups
             his_diff_list = []
             user_item_list = []
             all_facets_list = []
+            user_subspace_list = []
+            target_item_subspace_list = []
+            history_item_subspace_list = []
+            user_subspace_weights_list = []
+            target_item_subspace_weights_list = []
 
             for sg_meta in seq_group_metadata_list:
                 hde = getattr(sg_meta, 'his_diff_emb', None)
                 uif = getattr(sg_meta, 'user_item_facets', None)
                 af = getattr(sg_meta, 'all_facets', None)
+                use = getattr(sg_meta, 'user_subspace_emb', None)
+                tise = getattr(sg_meta, 'target_item_subspace_emb', None)
+                hise = getattr(sg_meta, 'history_item_subspace_embs', None)
+                usw = getattr(sg_meta, 'user_subspace_weights', None)
+                tsw = getattr(sg_meta, 'target_item_subspace_weights', None)
                 if hde is not None:
                     his_diff_list.append(hde)
                 if uif is not None:
                     user_item_list.append(uif)
                 if af is not None:
                     all_facets_list.append(af)
+                if use is not None:
+                    user_subspace_list.append(use)
+                if tise is not None:
+                    target_item_subspace_list.append(tise)
+                if hise is not None:
+                    history_item_subspace_list.append(hise)
+                if usw is not None:
+                    user_subspace_weights_list.append(usw)
+                if tsw is not None:
+                    target_item_subspace_weights_list.append(tsw)
 
             # Stack them into batch tensors
             if his_diff_list:
@@ -1762,6 +1805,16 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                 user_item_facets = torch.stack(user_item_list, dim=0)
             if all_facets_list:
                 all_facets = torch.stack(all_facets_list, dim=0)
+            if user_subspace_list:
+                user_subspace_emb = torch.stack(user_subspace_list, dim=0)
+            if target_item_subspace_list:
+                target_item_subspace_emb = torch.stack(target_item_subspace_list, dim=0)
+            if history_item_subspace_list:
+                history_item_subspace_embs = torch.stack(history_item_subspace_list, dim=0)
+            if user_subspace_weights_list:
+                user_subspace_weights = torch.stack(user_subspace_weights_list, dim=0)
+            if target_item_subspace_weights_list:
+                target_item_subspace_weights = torch.stack(target_item_subspace_weights_list, dim=0)
 
         # Add to model_input
         model_input = dataclasses.replace(
@@ -1769,6 +1822,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             his_diff_emb=his_diff_emb,
             user_item_facets=user_item_facets,
             all_facets=all_facets,
+            user_subspace_emb=user_subspace_emb,
+            target_item_subspace_emb=target_item_subspace_emb,
+            history_item_subspace_embs=history_item_subspace_embs,
+            user_subspace_weights=user_subspace_weights,
+            target_item_subspace_weights=target_item_subspace_weights,
         )
 
         if get_pp_group().is_last_rank:
@@ -1884,6 +1942,16 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                     extra_kwargs['user_item_facets'] = model_input.user_item_facets
                 if hasattr(model_input, 'all_facets') and model_input.all_facets is not None:
                     extra_kwargs['all_facets'] = model_input.all_facets
+                if hasattr(model_input, 'user_subspace_emb') and model_input.user_subspace_emb is not None:
+                    extra_kwargs['user_subspace_emb'] = model_input.user_subspace_emb
+                if hasattr(model_input, 'target_item_subspace_emb') and model_input.target_item_subspace_emb is not None:
+                    extra_kwargs['target_item_subspace_emb'] = model_input.target_item_subspace_emb
+                if hasattr(model_input, 'history_item_subspace_embs') and model_input.history_item_subspace_embs is not None:
+                    extra_kwargs['history_item_subspace_embs'] = model_input.history_item_subspace_embs
+                if hasattr(model_input, 'user_subspace_weights') and model_input.user_subspace_weights is not None:
+                    extra_kwargs['user_subspace_weights'] = model_input.user_subspace_weights
+                if hasattr(model_input, 'target_item_subspace_weights') and model_input.target_item_subspace_weights is not None:
+                    extra_kwargs['target_item_subspace_weights'] = model_input.target_item_subspace_weights
 
                 hidden_or_intermediate_states = model_executable(
                     input_ids=model_input.input_tokens,

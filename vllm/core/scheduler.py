@@ -1632,6 +1632,11 @@ class Scheduler:
                     his_diff_emb=getattr(seq_group, 'his_diff_emb', None),
                     user_item_facets=getattr(seq_group, 'user_item_facets', None),
                     all_facets=getattr(seq_group, 'all_facets', None),
+                    user_subspace_emb=getattr(seq_group, 'user_subspace_emb', None),
+                    target_item_subspace_emb=getattr(seq_group, 'target_item_subspace_emb', None),
+                    history_item_subspace_embs=getattr(seq_group, 'history_item_subspace_embs', None),
+                    user_subspace_weights=getattr(seq_group, 'user_subspace_weights', None),
+                    target_item_subspace_weights=getattr(seq_group, 'target_item_subspace_weights', None),
                 )
             else:
                 # When SPMD mode is enabled, we only send delta data except for
